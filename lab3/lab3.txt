@@ -1,0 +1,184 @@
+#!/usr/bin/python3
+
+import argparse
+import os
+import sys 
+import time
+import struct
+import random
+filepath = os.path.realpath(__file__)
+directory = os.path.dirname(filepath)    
+error_log = directory + '/errors.txt'
+
+fib, pow, sort, stop = range(4)
+
+
+def run_generator(args):
+    cmd = ['./generator.py'] + args
+    return subprocess.Popen(cmd, stdout=subprocess.PIPE, universal_newlines=True)
+
+
+def read_messages(args):
+    process = run_generator(args)
+
+    messages = []
+    while True:
+        header_size = struct.calcsize('@ii')
+        header_bytes = bytes( process.stdout.read(header_size), encoding='ascii' )
+        msg_type, msg_argc = struct.unpack('@ii', header_bytes)
+
+        if msg_argc > 0:
+            arg_format = '@' + 'i' * msg_argc
+            arg_size = struct.calcsize(arg_format)
+            arg_bytes = bytes( process.stdout.read(arg_size), encoding='ascii' )
+            msg_argv = list( struct.unpack(arg_format, arg_bytes) )
+        else:
+            msg_argv = []
+
+        msg = (msg_type, msg_argv)
+        messages.append(msg)
+        
+        if msg_type == stop:
+            break
+
+    process.stdout.close()
+    return messages
+
+
+def validate_messages(messages):
+    for msg in messages:
+        msg_type, msg_args = msg
+        assert fib <= msg_type <= stop
+
+        if msg_type == fib:
+            assert len(msg_args) == 1
+        elif msg_type == pow:
+            assert len(msg_args) == 2
+            b, p = msg_args
+            assert not (b == 0 and p < 0)  
+        elif msg_type == sort:
+            assert len(msg_args) >= 10
+        elif msg_type == stop:
+            assert len(msg_args) == 0
+
+    tasks, last_message = messages[:-1], messages[-1]
+    assert all(msg_type != stop for msg_type, _ in tasks)
+    assert last_message[0] == stop
+
+
+def line_count(filename):
+     with open(filename) as file:
+         return sum(1 for line in file)  
+
+
+#---------------#
+#-----Ð¢ÐµÑÑ‚Ñ‹-----#
+#---------------#
+def test_errors():
+    args = '10 uniform -a -200 -b -100'.split()
+    process = run_generator(args)
+    process.wait()
+
+    assert os.path.isfile(error_log)
+    assert line_count(error_log) == 10
+
+
+def test_generation():
+    args = '10 exponential -p 1'.split()
+    messages = read_messages(args)
+
+    assert len(messages) == 11
+    validate_messages(messages)
+
+    assert os.path.isfile(error_log)
+    assert line_count(error_log) == 0
+    
+def distrfunc(mode, args):
+    if mode == 'uniform':
+        a=args['a']
+		b = args['b']
+        if a > b: 
+            a, b = b, a
+        return lambda: randint(a, b)
+
+	if mode == 'exponential':
+        lambd = args['param']
+        return lambda: round( expovariate(lambd) ) 
+    if mode == 'normal':
+        mu, sigma = args['mean'], args['deviation']
+        return lambda: round( gauss(mu, sigma) )
+
+    
+
+    raise ValueError
+
+
+def gentask(rand):
+    fib, pow, sort = range(3)
+    task_type = choice([fib, pow, sort])
+    
+    if task_type == fib:
+        num_values = 1
+    elif task_type == pow:
+        num_values = 2
+    else:
+        num_values = max(10, rand())
+    
+    values = [rand() for _ in range(num_values)]
+
+    if task_type == pow:
+        if values[0] == 0 and values[1] < 0:
+            raise ValueError('Zero error')
+
+    return task_type, values
+parser = argparse.ArgumentParser('generator')
+parser.add_argument('count', type=int, help='amount')
+subparsers = parser.add_subparsers()
+
+uniform_subparser = subparsers.add_parser('uniform', help='Uniform distribution')
+uniform_subparser.add_argument('-a', '--min', dest='a', type=int, required=True, 
+    help='Minimal value')
+uniform_subparser.add_argument('-b', '--max', dest='b', type=int, required=True, 
+    help='Maximal value')
+
+normal_subparser = subparsers.add_parser('normal', help='Normal distribution')
+normal_subparser.add_argument('-m', '--mu', '--mean', dest='mean', type=int, required=True, 
+    help='Mean value')
+normal_subparser.add_argument('-s', '-d', '--sigma', '--deviation', dest='deviation', type=int, required=True, 
+    help='Standard deviation')
+
+exp_subparser = subparsers.add_parser('exponential', help='Exponential distribution')
+exp_subparser.add_argument('-l', '-p', '--lambda', '--parameter', dest='param', type=float, required=True,
+    help='Exponential parameter')
+
+def main():
+    if len(sys.argv) < 3:
+        parser.print_help()
+        exit(1)
+
+    mode = sys.argv[2]
+    args = vars(parser.parse_args(sys.argv[1:]))
+    rand = distrfunc(mode, args)
+
+    filepath = os.path.realpath(__file__)
+    directory = os.path.dirname(filepath)
+
+    with open(directory + "/errors.txt", 'w') as log:  
+        for i in range(0, args['count']):
+            try:
+                task, values = gentask(rand)
+                size = len(values)
+
+                format = '@ii' + 'i' * size
+                msg = struct.pack(format, task, size, *values)
+                os.write(1, msg)
+
+                time.sleep(rand() / 1000)
+            except ValueError as ex:
+                log.write( 'Error in task %i: %s\n' % (i, ex) )
+
+        stop_msg = struct.pack('@ii', 3, 0)
+        os.write(1, stop_msg)
+
+if __name__ == '__main__':
+   main()
